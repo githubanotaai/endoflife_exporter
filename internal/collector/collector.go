@@ -2,8 +2,12 @@ package collector
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -11,67 +15,151 @@ import (
 	"github.com/veerendra2/endoflife_exporter/pkg/endoflife"
 )
 
+const (
+	endOfLifeProductInfoMetricName                   = "endoflife_product_info"
+	endOfLifeLatestVersionTimestampSecondsMetricName = "endoflife_latest_version_timestamp_seconds"
+	endOfLifeReleaseCycleTimestampSecondsMetricName  = "endoflife_release_cycle_timestamp_seconds"
+	endOfLifeEolFromTimestampSecondsMetricName       = "endoflife_eol_from_timestamp_seconds"
+)
+
 var (
-	EndOfLifeProductInfoDesc = prometheus.NewDesc(
-		"endoflife_product_info",
-		"Product release cycle information with EOL status, LTS flag, and maintenance state.",
-		[]string{
+	validLabelName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+	reservedMetricLabelNames = map[string]struct{}{
+		"is_eol":             {},
+		"is_lts":             {},
+		"is_maintained":      {},
+		"latest_version":     {},
+		"product_name":       {},
+		"release_cycle_name": {},
+	}
+)
+
+type Exporter struct {
+	config                *config.Config
+	eolClient             endoflife.Client
+	extraMetricLabelNames []string
+
+	productInfoDesc                   *prometheus.Desc
+	latestVersionTimestampSecondsDesc *prometheus.Desc
+	releaseCycleTimestampSecondsDesc  *prometheus.Desc
+	eolFromTimestampSecondsDesc       *prometheus.Desc
+}
+
+func NewExporter(cfg config.Config) (*Exporter, error) {
+	extraMetricLabelNames, err := customMetricLabelNames(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	ec, err := endoflife.NewClient()
+	if err != nil {
+		return nil, err
+	}
+
+	return &Exporter{
+		config:                &cfg,
+		eolClient:             ec,
+		extraMetricLabelNames: extraMetricLabelNames,
+
+		productInfoDesc: newMetricDesc(
+			endOfLifeProductInfoMetricName,
+			"Product release cycle information with EOL status, LTS flag, and maintenance state.",
+			extraMetricLabelNames,
 			"is_eol",
 			"is_lts",
 			"is_maintained",
 			"latest_version",
 			"product_name",
 			"release_cycle_name",
-		}, nil,
-	)
-	EndOfLifeLatestVersionTimestampSecondsDesc = prometheus.NewDesc(
-		"endoflife_latest_version_timestamp_seconds",
-		"Release date of the latest version in the release cycle in Unix timestamp.",
-		[]string{
+		),
+		latestVersionTimestampSecondsDesc: newMetricDesc(
+			endOfLifeLatestVersionTimestampSecondsMetricName,
+			"Release date of the latest version in the release cycle in Unix timestamp.",
+			extraMetricLabelNames,
 			"product_name",
 			"release_cycle_name",
 			"latest_version",
-		}, nil,
-	)
-	EndOfLifeReleaseCycleTimestampSecondsDesc = prometheus.NewDesc(
-		"endoflife_release_cycle_timestamp_seconds",
-		"Initial release date of the release cycle in Unix timestamp.",
-		[]string{
+		),
+		releaseCycleTimestampSecondsDesc: newMetricDesc(
+			endOfLifeReleaseCycleTimestampSecondsMetricName,
+			"Initial release date of the release cycle in Unix timestamp.",
+			extraMetricLabelNames,
 			"product_name",
 			"release_cycle_name",
-		}, nil,
-	)
-	EndOfLifeEolFromTimestampSecondsDesc = prometheus.NewDesc(
-		"endoflife_eol_from_timestamp_seconds",
-		"End-of-life date when the release cycle support ends in Unix timestamp.",
-		[]string{
+		),
+		eolFromTimestampSecondsDesc: newMetricDesc(
+			endOfLifeEolFromTimestampSecondsMetricName,
+			"End-of-life date when the release cycle support ends in Unix timestamp.",
+			extraMetricLabelNames,
 			"product_name",
 			"release_cycle_name",
-		}, nil,
-	)
-)
-
-type Exporter struct {
-	config    *config.Config
-	eolClient endoflife.Client
-}
-
-func NewExporter(cfg config.Config) (*Exporter, error) {
-	ec, err := endoflife.NewClient()
-	if err != nil {
-		return nil, err
-	}
-	return &Exporter{
-		config:    &cfg,
-		eolClient: ec,
+		),
 	}, nil
 }
 
 func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
-	ch <- EndOfLifeProductInfoDesc
-	ch <- EndOfLifeLatestVersionTimestampSecondsDesc
-	ch <- EndOfLifeReleaseCycleTimestampSecondsDesc
-	ch <- EndOfLifeEolFromTimestampSecondsDesc
+	ch <- e.productInfoDesc
+	ch <- e.latestVersionTimestampSecondsDesc
+	ch <- e.releaseCycleTimestampSecondsDesc
+	ch <- e.eolFromTimestampSecondsDesc
+}
+
+func customMetricLabelNames(cfg config.Config) ([]string, error) {
+	labelNames := map[string]struct{}{}
+
+	for _, product := range cfg.Products {
+		for labelName := range product.Labels {
+			if err := validateCustomMetricLabelName(labelName); err != nil {
+				return nil, fmt.Errorf("invalid label %q for product %q: %w", labelName, product.Name, err)
+			}
+			labelNames[labelName] = struct{}{}
+		}
+	}
+
+	labels := make([]string, 0, len(labelNames))
+	for labelName := range labelNames {
+		labels = append(labels, labelName)
+	}
+	sort.Strings(labels)
+
+	return labels, nil
+}
+
+func validateCustomMetricLabelName(labelName string) error {
+	if strings.HasPrefix(labelName, "__") {
+		return fmt.Errorf("labels starting with __ are reserved by Prometheus")
+	}
+
+	if _, ok := reservedMetricLabelNames[labelName]; ok {
+		return fmt.Errorf("label conflicts with an internal metric label")
+	}
+
+	if !validLabelName.MatchString(labelName) {
+		return fmt.Errorf("label must match [a-zA-Z_][a-zA-Z0-9_]*")
+	}
+
+	return nil
+}
+
+func newMetricDesc(name string, help string, extraMetricLabelNames []string, baseLabels ...string) *prometheus.Desc {
+	return prometheus.NewDesc(name, help, metricLabelNames(extraMetricLabelNames, baseLabels...), nil)
+}
+
+func metricLabelNames(extraMetricLabelNames []string, baseLabels ...string) []string {
+	labels := make([]string, 0, len(baseLabels)+len(extraMetricLabelNames))
+	labels = append(labels, baseLabels...)
+	labels = append(labels, extraMetricLabelNames...)
+	return labels
+}
+
+func metricLabelValues(product config.Product, extraMetricLabelNames []string, baseValues ...string) []string {
+	values := make([]string, 0, len(baseValues)+len(extraMetricLabelNames))
+	values = append(values, baseValues...)
+	for _, labelName := range extraMetricLabelNames {
+		values = append(values, product.Labels[labelName])
+	}
+	return values
 }
 
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
@@ -104,40 +192,56 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		// Process and export metrics for all releases
 		for _, relInfo := range releases {
 			ch <- prometheus.MustNewConstMetric(
-				EndOfLifeProductInfoDesc,
+				e.productInfoDesc,
 				prometheus.GaugeValue,
 				1,
-				strconv.FormatBool(relInfo.IsEol),
-				strconv.FormatBool(relInfo.IsLts),
-				strconv.FormatBool(relInfo.IsMaintained),
-				relInfo.LatestVersion,
-				product.Name,
-				relInfo.ReleaseCycleName,
+				metricLabelValues(
+					product,
+					e.extraMetricLabelNames,
+					strconv.FormatBool(relInfo.IsEol),
+					strconv.FormatBool(relInfo.IsLts),
+					strconv.FormatBool(relInfo.IsMaintained),
+					relInfo.LatestVersion,
+					product.Name,
+					relInfo.ReleaseCycleName,
+				)...,
 			)
 
 			ch <- prometheus.MustNewConstMetric(
-				EndOfLifeLatestVersionTimestampSecondsDesc,
+				e.latestVersionTimestampSecondsDesc,
 				prometheus.GaugeValue,
 				float64(relInfo.LatestVersionDate.Unix()),
-				product.Name,
-				relInfo.ReleaseCycleName,
-				relInfo.LatestVersion,
+				metricLabelValues(
+					product,
+					e.extraMetricLabelNames,
+					product.Name,
+					relInfo.ReleaseCycleName,
+					relInfo.LatestVersion,
+				)...,
 			)
 
 			ch <- prometheus.MustNewConstMetric(
-				EndOfLifeReleaseCycleTimestampSecondsDesc,
+				e.releaseCycleTimestampSecondsDesc,
 				prometheus.GaugeValue,
 				float64(relInfo.ReleaseCycleDate.Unix()),
-				product.Name,
-				relInfo.ReleaseCycleName,
+				metricLabelValues(
+					product,
+					e.extraMetricLabelNames,
+					product.Name,
+					relInfo.ReleaseCycleName,
+				)...,
 			)
 
 			ch <- prometheus.MustNewConstMetric(
-				EndOfLifeEolFromTimestampSecondsDesc,
+				e.eolFromTimestampSecondsDesc,
 				prometheus.GaugeValue,
 				float64(relInfo.EOLFrom.Unix()),
-				product.Name,
-				relInfo.ReleaseCycleName,
+				metricLabelValues(
+					product,
+					e.extraMetricLabelNames,
+					product.Name,
+					relInfo.ReleaseCycleName,
+				)...,
 			)
 		}
 	}
