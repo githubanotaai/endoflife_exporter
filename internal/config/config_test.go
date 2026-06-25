@@ -44,6 +44,29 @@ products:
 			Expect(cfg.Products[0].Releases).To(HaveLen(2))
 		})
 
+		It("should load product labels", func() {
+			configContent := `---
+products:
+  - name: kubernetes
+    releases:
+      - "1.31"
+    labels:
+      cluster: "production-logistics"
+      owner_team: "sre"`
+			filePath := filepath.Join(tempDir, "test_labels_config.yaml")
+			Expect(os.WriteFile(filePath, []byte(configContent), 0644)).To(Succeed())
+
+			cfg, err := LoadConfig(filePath)
+
+			Expect(err).To(BeNil())
+			Expect(cfg).NotTo(BeNil())
+			Expect(cfg.Products).To(HaveLen(1))
+			Expect(cfg.Products[0].Labels).To(Equal(map[string]string{
+				"cluster":        "production-logistics",
+				"owner_team": "sre",
+			}))
+		})
+
 		It("should fail when the 'products' list is empty", func() {
 			configContent := `---
 products:`

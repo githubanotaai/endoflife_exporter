@@ -9,9 +9,10 @@ import (
 )
 
 type Product struct {
-	Name        string   `yaml:"name"`
-	AllReleases bool     `yaml:"all_releases,omitempty"`
-	Releases    []string `yaml:"releases"`
+	Name        string            `yaml:"name"`
+	AllReleases bool              `yaml:"all_releases,omitempty"`
+	Releases    []string          `yaml:"releases"`
+	Labels      map[string]string `yaml:"labels,omitempty"`
 }
 
 type Config struct {

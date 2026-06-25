@@ -78,6 +78,8 @@ products:
     all_releases: true
 ```
 
+The optional `labels` block accepts custom Prometheus label names. Label names must match `[a-zA-Z_][a-zA-Z0-9_]*`, cannot start with `__`, and cannot override exporter labels such as `product_name`, `release_cycle_name`, or `latest_version`.
+
 ## Prometheus Configuration
 
 Below is an example scrape configuration for Prometheus.

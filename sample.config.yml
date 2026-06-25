@@ -1,14 +1,17 @@
 # Sample configuration file
 ---
 products:
-  - name: mongo # Product name, verify on https://endoflife.date/
-    releases: # Release cycles you want to track, verify cycle name on https://endoflife.date/
-      - "8.0"
-      - "7.0"
-  - name: redis
+  - name: kubernetes
     releases:
-      - latest
-  - name: ubuntu
-    all_releases: true # Fetch all available release cycles for this product (ignores 'releases' field if set)
+      - "1.33"
+    labels:
+      aws_account: "production"
+      cluster_slug: "production-logistics"
+      owner_team: "sre"
+
+  - name: postgres
     releases:
-      - latest
+      - "17"
+    labels:
+      aws_account: "aaipltf-use1-prd-cnc"
+      owner_team: "dbre"
